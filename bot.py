@@ -37,7 +37,7 @@ def decide(state, memory):
     elif phase == "kite":
         action = _kite_action(own_x, own_y, opp_x, opp_y, dx, dy, gap, cooldown, uses_left)
     else:
-        action = {"type": "idle"}
+        action = _finish_action(dx, dy, gap, own_hp, opp_hp)
 
     return action, {"phase": phase}
 
@@ -88,3 +88,11 @@ def _kite_action(own_x, own_y, opp_x, opp_y, dx, dy, gap, cooldown, uses_left):
     if gap > KITE_MAX:
         return _move_toward(dx, dy)
     return {"type": "idle"}
+
+
+def _finish_action(dx, dy, gap, own_hp, opp_hp):
+    if own_hp <= LOW_HP_THRESHOLD and opp_hp > own_hp:
+        return {"type": "defend"}
+    if gap <= MELEE_RANGE:
+        return {"type": "attack_melee"}
+    return _move_toward(dx, dy)

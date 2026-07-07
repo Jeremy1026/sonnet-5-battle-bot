@@ -103,3 +103,45 @@ def test_kite_retreat_handles_exact_overlap_with_opponent():
     )
     assert action["type"] == "move"
     assert (action["dx"], action["dy"]) != (0.0, 0.0)
+
+
+def test_finish_phase_triggers_when_ammo_exhausted():
+    _, memory = bot.decide(
+        _state(70.0, 50.0, 90.0, 50.0, uses_left=0),
+        {"phase": "kite"},
+    )
+    assert memory["phase"] == "finish"
+
+
+def test_finish_attacks_melee_in_range():
+    action, _ = bot.decide(
+        _state(88.0, 50.0, 90.0, 50.0, own_hp=80, opp_hp=40, uses_left=0),
+        {"phase": "finish"},
+    )
+    assert action == {"type": "attack_melee"}
+
+
+def test_finish_closes_distance_out_of_melee_range():
+    action, _ = bot.decide(
+        _state(70.0, 50.0, 90.0, 50.0, own_hp=80, opp_hp=40, uses_left=0),
+        {"phase": "finish"},
+    )
+    assert action["type"] == "move"
+    assert action["dx"] > 0
+
+
+def test_finish_defends_when_low_hp_and_behind():
+    action, _ = bot.decide(
+        _state(88.0, 50.0, 90.0, 50.0, own_hp=15, opp_hp=60, uses_left=0),
+        {"phase": "finish"},
+    )
+    assert action == {"type": "defend"}
+
+
+def test_finish_still_attacks_when_low_hp_but_ahead():
+    # own_hp is low, but opponent HP is lower still -- press the advantage.
+    action, _ = bot.decide(
+        _state(88.0, 50.0, 90.0, 50.0, own_hp=15, opp_hp=10, uses_left=0),
+        {"phase": "finish"},
+    )
+    assert action == {"type": "attack_melee"}
