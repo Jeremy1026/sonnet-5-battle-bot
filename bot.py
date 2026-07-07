@@ -35,7 +35,7 @@ def decide(state, memory):
     if phase == "approach":
         action = _move_toward(dx, dy)
     elif phase == "kite":
-        action = {"type": "idle"}
+        action = _kite_action(own_x, own_y, opp_x, opp_y, dx, dy, gap, cooldown, uses_left)
     else:
         action = {"type": "idle"}
 
@@ -52,3 +52,39 @@ def _normalize(dx, dy):
 def _move_toward(dx, dy):
     ux, uy = _normalize(dx, dy)
     return {"type": "move", "dx": ux * MOVE_SPEED, "dy": uy * MOVE_SPEED}
+
+
+def _clamp(value):
+    return min(max(value, ARENA_MIN), ARENA_MAX)
+
+
+def _move_away(own_x, own_y, opp_x, opp_y, dx, dy):
+    ax, ay = _normalize(-dx, -dy)
+    predicted_x = _clamp(own_x + ax * MOVE_SPEED)
+    predicted_y = _clamp(own_y + ay * MOVE_SPEED)
+    current_gap = math.hypot(opp_x - own_x, opp_y - own_y)
+    predicted_gap = math.hypot(opp_x - predicted_x, opp_y - predicted_y)
+
+    if predicted_gap - current_gap >= MOVE_SPEED * 0.5:
+        return {"type": "move", "dx": predicted_x - own_x, "dy": predicted_y - own_y}
+
+    # Direct retreat is wall-blocked (or we're exactly on top of the
+    # opponent, giving no defined retreat direction) -- walking toward the
+    # arena center always increases distance from every wall and is a
+    # deterministic, non-oscillating escape from a corner.
+    cx, cy = _normalize(ARENA_CENTER - own_x, ARENA_CENTER - own_y)
+    if cx == 0.0 and cy == 0.0:
+        cx, cy = 1.0, 0.0
+    return {"type": "move", "dx": cx * MOVE_SPEED, "dy": cy * MOVE_SPEED}
+
+
+def _kite_action(own_x, own_y, opp_x, opp_y, dx, dy, gap, cooldown, uses_left):
+    if gap <= MELEE_RANGE:
+        return _move_away(own_x, own_y, opp_x, opp_y, dx, dy)
+    if cooldown == 0 and uses_left > 0:
+        return {"type": "attack_ranged"}
+    if gap < KITE_MIN:
+        return _move_away(own_x, own_y, opp_x, opp_y, dx, dy)
+    if gap > KITE_MAX:
+        return _move_toward(dx, dy)
+    return {"type": "idle"}
