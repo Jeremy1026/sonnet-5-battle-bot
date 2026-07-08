@@ -4,16 +4,32 @@ import bot
 
 
 def _state(own_x, own_y, opp_x, opp_y, own_hp=100, opp_hp=100,
-           cooldown=0, uses_left=5, tick=0):
+           cooldown=0, uses_left=5, tick=0, own_facing=None, opponent_facing=None):
+    # Default facing: aimed straight at the opponent, so existing
+    # non-facing-focused tests exercise phase logic without being blocked
+    # by the aim-gate.
+    if own_facing is None:
+        own_facing = _unit(opp_x - own_x, opp_y - own_y)
+    if opponent_facing is None:
+        opponent_facing = _unit(own_x - opp_x, own_y - opp_y)
     return {
         "own_position": {"x": own_x, "y": own_y},
         "own_hp": own_hp,
         "opponent_position": {"x": opp_x, "y": opp_y},
         "opponent_hp": opp_hp,
+        "own_facing": {"dx": own_facing[0], "dy": own_facing[1]},
+        "opponent_facing": {"dx": opponent_facing[0], "dy": opponent_facing[1]},
         "ranged_cooldown_remaining": cooldown,
         "ranged_uses_remaining": uses_left,
         "tick": tick,
     }
+
+
+def _unit(dx, dy):
+    mag = math.hypot(dx, dy)
+    if mag == 0:
+        return (1.0, 0.0)
+    return (dx / mag, dy / mag)
 
 
 def test_approach_moves_toward_opponent_when_far():
@@ -84,15 +100,19 @@ def test_kite_closes_distance_when_beyond_kite_max_on_cooldown():
     assert action["dx"] > 0
 
 
-def test_kite_retreat_slides_toward_center_when_direct_retreat_is_wall_blocked():
-    # Pinned against the left wall (x=2); opponent adjacent to the right.
-    # Direct retreat (further left) is fully clamped by the arena boundary.
+def test_kite_retreat_steps_perpendicular_when_direct_retreat_is_wall_blocked():
+    # Pinned against the left wall (x=2); opponent adjacent to the right,
+    # directly along the x-axis. Direct retreat (further left) is fully
+    # clamped by the arena boundary, so the bot should step perpendicular
+    # (along y) toward whichever side has more room, rather than trying
+    # to push into the wall.
     action, _ = bot.decide(
         _state(2.0, 50.0, 4.0, 50.0, cooldown=5, uses_left=3),
         {"phase": "kite"},
     )
     assert action["type"] == "move"
-    assert action["dx"] > 0  # moves right, toward center (50), not into the wall
+    assert math.isclose(action["dx"], 0.0, abs_tol=1e-9)
+    assert abs(action["dy"]) > 0
 
 
 def test_kite_retreat_handles_exact_overlap_with_opponent():
@@ -132,7 +152,8 @@ def test_finish_closes_distance_out_of_melee_range():
 
 def test_finish_defends_when_low_hp_and_behind():
     action, _ = bot.decide(
-        _state(88.0, 50.0, 90.0, 50.0, own_hp=15, opp_hp=60, uses_left=0),
+        _state(88.0, 50.0, 90.0, 50.0, own_hp=15, opp_hp=60, uses_left=0,
+               own_facing=(-1.0, 0.0)),
         {"phase": "finish"},
     )
     assert action == {"type": "defend"}
@@ -145,3 +166,36 @@ def test_finish_still_attacks_when_low_hp_but_ahead():
         {"phase": "finish"},
     )
     assert action == {"type": "attack_melee"}
+
+
+def test_kite_rotates_instead_of_firing_when_facing_away_from_opponent():
+    # In ranged range and off cooldown, but facing straight up instead of
+    # at the opponent (who is to the east) -- should rotate, not fire.
+    action, _ = bot.decide(
+        _state(70.0, 50.0, 90.0, 50.0, cooldown=0, uses_left=3,
+               own_facing=(0.0, 1.0)),
+        {"phase": "kite"},
+    )
+    assert action == {"type": "rotate", "dx": 20.0, "dy": 0.0}
+
+
+def test_finish_rotates_instead_of_melee_when_facing_away_from_opponent():
+    action, _ = bot.decide(
+        _state(88.0, 50.0, 90.0, 50.0, own_hp=80, opp_hp=40, uses_left=0,
+               own_facing=(0.0, -1.0)),
+        {"phase": "finish"},
+    )
+    assert action == {"type": "rotate", "dx": 2.0, "dy": 0.0}
+
+
+def test_finish_rotates_to_face_away_before_defending_when_facing_opponent():
+    # Low HP and behind, but currently facing the opponent -- defend
+    # requires facing away, so rotate away first instead of defending.
+    action, _ = bot.decide(
+        _state(88.0, 50.0, 90.0, 50.0, own_hp=15, opp_hp=60, uses_left=0,
+               own_facing=(1.0, 0.0)),
+        {"phase": "finish"},
+    )
+    assert action == {"type": "rotate", "dx": -2.0, "dy": 0.0}
+
+

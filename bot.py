@@ -10,6 +10,7 @@ APPROACH_BUFFER = 25.0
 KITE_MIN = 15.0
 KITE_MAX = 25.0
 LOW_HP_THRESHOLD = 25
+AIM_THRESHOLD = 0.95
 
 
 def decide(state, memory):
@@ -21,6 +22,8 @@ def decide(state, memory):
     opp_hp = state["opponent_hp"]
     cooldown = state["ranged_cooldown_remaining"]
     uses_left = state["ranged_uses_remaining"]
+    facing_dx = state["own_facing"]["dx"]
+    facing_dy = state["own_facing"]["dy"]
 
     dx = opp_x - own_x
     dy = opp_y - own_y
@@ -39,7 +42,32 @@ def decide(state, memory):
     else:
         action = _finish_action(dx, dy, gap, own_hp, opp_hp)
 
+    action = _aim_gate(action, facing_dx, facing_dy, dx, dy)
+
     return action, {"phase": phase}
+
+
+def _aligned(facing_dx, facing_dy, target_dx, target_dy):
+    facing_length = math.hypot(facing_dx, facing_dy)
+    target_length = math.hypot(target_dx, target_dy)
+    if facing_length == 0 or target_length == 0:
+        return True
+    aim_dot = (facing_dx * target_dx + facing_dy * target_dy) / (facing_length * target_length)
+    return aim_dot >= AIM_THRESHOLD
+
+
+def _aim_gate(action, facing_dx, facing_dy, dx, dy):
+    # attack_melee/attack_ranged need facing toward the opponent; defend
+    # needs facing away from the opponent (the attacker). Movement/idle
+    # don't depend on facing and pass through unchanged.
+    action_type = action["type"]
+    if action_type in ("attack_melee", "attack_ranged"):
+        if not _aligned(facing_dx, facing_dy, dx, dy):
+            return {"type": "rotate", "dx": dx, "dy": dy}
+    elif action_type == "defend":
+        if not _aligned(facing_dx, facing_dy, -dx, -dy):
+            return {"type": "rotate", "dx": -dx, "dy": -dy}
+    return action
 
 
 def _normalize(dx, dy):
@@ -69,20 +97,45 @@ def _move_away(own_x, own_y, opp_x, opp_y, dx, dy):
         return {"type": "move", "dx": predicted_x - own_x, "dy": predicted_y - own_y}
 
     # Direct retreat is wall-blocked (or we're exactly on top of the
-    # opponent, giving no defined retreat direction) -- walking toward the
-    # arena center always increases distance from every wall and is a
-    # deterministic, non-oscillating escape from a corner.
-    cx, cy = _normalize(ARENA_CENTER - own_x, ARENA_CENTER - own_y)
-    if cx == 0.0 and cy == 0.0:
-        cx, cy = 1.0, 0.0
-    return {"type": "move", "dx": cx * MOVE_SPEED, "dy": cy * MOVE_SPEED}
+    # opponent, giving no defined retreat direction). Walking straight
+    # toward the arena center doesn't help here: an opponent chasing our
+    # current position at matching speed closes the same straight-line gap
+    # we're opening, so we stay pinned at the collision radius forever.
+    # Stepping perpendicular to the opponent instead breaks that symmetry
+    # -- the opponent's chase vector aims at where we *were*, not where
+    # we're going, so a same-speed perpendicular step increases the gap
+    # (Pythagorean: sqrt((gap - speed)^2 + speed^2) > gap for gap < 2 *
+    # speed). Pick whichever perpendicular direction lands further from
+    # the nearest wall, to actually escape the corner over time.
+    if ax == 0.0 and ay == 0.0:
+        ax, ay = 1.0, 0.0
+    perp_options = ((-ay, ax), (ay, -ax))
+    best = max(
+        perp_options,
+        key=lambda p: _distance_to_nearest_wall(
+            _clamp(own_x + p[0] * MOVE_SPEED), _clamp(own_y + p[1] * MOVE_SPEED)
+        ),
+    )
+    px, py = best
+    return {"type": "move", "dx": px * MOVE_SPEED, "dy": py * MOVE_SPEED}
+
+
+def _distance_to_nearest_wall(x, y):
+    return min(x - ARENA_MIN, ARENA_MAX - x, y - ARENA_MIN, ARENA_MAX - y)
 
 
 def _kite_action(own_x, own_y, opp_x, opp_y, dx, dy, gap, cooldown, uses_left):
-    if gap <= MELEE_RANGE:
-        return _move_away(own_x, own_y, opp_x, opp_y, dx, dy)
+    # Fire whenever ready, even at melee range: firing is a guaranteed 15
+    # dmg dealt, whereas retreating from an adjacent opponent only avoids
+    # damage if the retreat actually increases distance -- against a wall
+    # (or an opponent matching your speed), it can't, which previously
+    # deadlocked Peregrine into retreating forever while eating free melee
+    # hits. Attacking first dominates that case and is never worse in the
+    # open field either (15 dealt for at most 10 taken is a good trade).
     if cooldown == 0 and uses_left > 0:
         return {"type": "attack_ranged"}
+    if gap <= MELEE_RANGE:
+        return _move_away(own_x, own_y, opp_x, opp_y, dx, dy)
     if gap < KITE_MIN:
         return _move_away(own_x, own_y, opp_x, opp_y, dx, dy)
     if gap > KITE_MAX:
